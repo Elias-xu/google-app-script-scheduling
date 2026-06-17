@@ -1,0 +1,109 @@
+/**
+ * 當試算表開啟時，自動建立自訂選單
+ */
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  
+  // 第一層選單名稱：📌自訂功能
+  ui.createMenu('📌自訂功能')
+    // 第二層按鈕名稱：預估營收，並連結到 exportCalendarToSheet 函式
+    .addItem('預估營收', 'exportCalendarToSheet')
+    .addToUi();
+}
+
+function exportCalendarToSheet() {
+  // 1. 基本設定
+  const calendarId = '3uhhj5trcrminl2j5oudmtencs@group.calendar.google.com'; 
+  const sheetName = '預估營收';
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(sheetName);
+  
+  // 如果找不到工作表則自動建立
+  if (!sheet) {
+    sheet = ss.insertSheet(sheetName);
+  }
+
+  // 2. 日期區間判斷
+  const tz = Session.getScriptTimeZone();
+  let startDate = sheet.getRange('A1').getValue();
+  let endDate = sheet.getRange('B1').getValue();
+
+  // 如果 A1 或 B1 是空的，自動抓取下個月整個月
+  if (!startDate || !endDate) {
+    const today = new Date();
+    const defaultStart = new Date(today.getFullYear(), today.getMonth() + 1, 1, 0, 0, 0);
+    const defaultEnd = new Date(today.getFullYear(), today.getMonth() + 2, 0, 23, 59, 59);
+
+    startDate = defaultStart;
+    endDate = defaultEnd;
+
+    sheet.getRange('A1').setValue(Utilities.formatDate(defaultStart, tz, 'yyyy/MM/dd'));
+    sheet.getRange('B1').setValue(Utilities.formatDate(defaultEnd, tz, 'yyyy/MM/dd'));
+  }
+
+  // 3. 清空舊資料
+  sheet.getRange('A2:Z').clearContent();
+
+  // 4. 寫入新的標題列
+  const headers = ['課程', '梯次', '預估營收'];
+  sheet.getRange('A2').offset(0, 0, 1, headers.length).setValues([headers]);
+
+  // 5. 定義要篩選的關鍵字清單
+  const keywords = ['公開', 'S003', 'S007', 'S010', 'S012', 'S014', 'S217', 'S216'];
+
+  // 6. 讀取 Google 日曆事件並加入權限防呆
+  const calendar = CalendarApp.getCalendarById(calendarId);
+  if (!calendar) {
+    SpreadsheetApp.getUi().alert('找不到指定的日曆，請檢查日曆 ID 是否正確。');
+    return; 
+  }
+  const events = calendar.getEvents(startDate, endDate);
+
+  // 7. 篩選出標題包含關鍵字的事件
+  const filteredEvents = events.filter(e => {
+    const title = e.getTitle();
+    return keywords.some(keyword => title.includes(keyword));
+  });
+
+  // 8. 組資料：抓取標題、開始時間，並多抓精確時間戳記用作排序
+  const allData = filteredEvents.map(e => [
+    e.getTitle().trim(),
+    Utilities.formatDate(e.getStartTime(), tz, 'yyMMdd'),
+    e.getStartTime().getTime() // 暫時存放精確時間戳記（毫秒）
+  ]);
+
+  // 🌟 新增：自訂雙重排序邏輯
+  allData.sort((a, b) => {
+    // 第一層：比較日曆「開始時間」
+    if (a[2] !== b[2]) {
+      return a[2] - b[2]; // 時間早的排前面
+    }
+    // 第二層：如果開始時間完全一樣，則依據「課程」欄位資料排序 A 到 Z
+    return a[0].localeCompare(b[0], 'zh-TW');
+  });
+
+  // 排序完後，將用於排序的時間戳記移除，恢復成試算表原本的 2 欄格式
+  allData.forEach(row => row.pop());
+
+  // 9. 寫入事件資料與比對公式
+  if (allData.length > 0) {
+    // 寫入 A 欄與 B 欄的日曆資料
+    sheet.getRange(3, 1, allData.length, 2).setValues(allData);
+    
+    const formulas = [];
+    for (let i = 0; i < allData.length; i++) {
+      const row = i + 3; // 資料從第 3 行開始
+      
+      // 💡 終極優化版公式：使用 "([A-Za-z0-9]+)(公開|直播)" 
+      // 邏輯：只要遇到「公開」或「直播」，就會精準把左邊的代碼（如 512、S003）挖出來
+      const formula = `=INDEX('開班人數'!$A:$Z, MATCH(IFERROR(REGEXEXTRACT(A${row}, "([A-Za-z0-9]+)(?:公開|直播|講座)"), A${row}), '開班人數'!$A:$A, 0), MATCH("期望金額(c)=a*b", '開班人數'!$2:$2, 0))`;
+      formulas.push([formula]);
+    }
+    
+    // 將公式批次寫入 C 欄
+    sheet.getRange(3, 3, allData.length, 1).setFormulas(formulas);
+  }
+
+  // 10. 在資料最下方顯示總筆數
+  sheet.getRange(allData.length + 3, 1).setValue('資料筆數：' + allData.length);
+}
