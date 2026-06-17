@@ -1,109 +1,178 @@
 /**
- * 當試算表開啟時，自動建立自訂選單
+ * Google Apps Script: 從 Google Calendar 抓取公開班課程。
+ *
+ * 輸出目標固定為 README.md 內的 Google Sheet 連結，分頁名稱為「公開班課程」。
+ * 輸出欄位只保留：課程、梯次。
+ */
+const CALENDAR_LESSON_CONFIG = {
+  spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/1tECC_DRqV0rgUnkggrOz-DJXNRwiJ-ishLR2H3c7Quc/edit?gid=0#gid=0',
+  calendarId: '3uhhj5trcrminl2j5oudmtencs@group.calendar.google.com',
+  outputSheetName: '公開班課程',
+  dateRangeCells: {
+    start: 'A1',
+    end: 'B1',
+  },
+  headerRow: 2,
+  headers: ['課程', '梯次'],
+  titleKeywords: ['公開', 'S003', 'S007', 'S010', 'S012', 'S014', 'S216', 'S217'],
+};
+
+/**
+ * 當試算表開啟時，自動建立自訂選單。
  */
 function onOpen() {
-  const ui = SpreadsheetApp.getUi();
-  
-  // 第一層選單名稱：📌自訂功能
-  ui.createMenu('📌自訂功能')
-    // 第二層按鈕名稱：預估營收，並連結到 exportCalendarToSheet 函式
-    .addItem('預估營收', 'exportCalendarToSheet')
+  SpreadsheetApp.getUi()
+    .createMenu('📌自訂功能')
+    .addItem('抓取公開班課程', 'exportCalendarLessonsToSheet')
     .addToUi();
 }
 
-function exportCalendarToSheet() {
-  // 1. 基本設定
-  const calendarId = '3uhhj5trcrminl2j5oudmtencs@group.calendar.google.com'; 
-  const sheetName = '預估營收';
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName(sheetName);
-  
-  // 如果找不到工作表則自動建立
-  if (!sheet) {
-    sheet = ss.insertSheet(sheetName);
+/**
+ * 從指定 Google Calendar 抓取公開班課程，並寫入 README 連結內的「公開班課程」分頁。
+ */
+function exportCalendarLessonsToSheet() {
+  const ss = SpreadsheetApp.openByUrl(CALENDAR_LESSON_CONFIG.spreadsheetUrl);
+  const sheet = getOrCreateSheet_(ss, CALENDAR_LESSON_CONFIG.outputSheetName);
+  const dateRange = getOrCreateDateRange_(sheet);
+  const calendar = CalendarApp.getCalendarById(CALENDAR_LESSON_CONFIG.calendarId);
+
+  if (!calendar) {
+    SpreadsheetApp.getUi().alert('找不到指定的日曆，請檢查日曆 ID 是否正確，或確認目前帳號是否有日曆權限。');
+    return;
   }
 
-  // 2. 日期區間判斷
-  const tz = Session.getScriptTimeZone();
-  let startDate = sheet.getRange('A1').getValue();
-  let endDate = sheet.getRange('B1').getValue();
+  clearOutput_(sheet);
+  writeHeaders_(sheet);
 
-  // 如果 A1 或 B1 是空的，自動抓取下個月整個月
+  const rows = calendar
+    .getEvents(dateRange.startDate, dateRange.endDate)
+    .filter(isPublicLessonEvent_)
+    .map(buildLessonRow_)
+    .sort(sortLessonRows_)
+    .map(row => [row.course, row.session]);
+
+  if (rows.length > 0) {
+    sheet
+      .getRange(CALENDAR_LESSON_CONFIG.headerRow + 1, 1, rows.length, CALENDAR_LESSON_CONFIG.headers.length)
+      .setValues(rows);
+  }
+
+  sheet
+    .getRange(CALENDAR_LESSON_CONFIG.headerRow + rows.length + 1, 1)
+    .setValue('資料筆數：' + rows.length);
+
+  SpreadsheetApp.getActiveSpreadsheet().toast('公開班課程抓取完成：' + rows.length + ' 筆');
+}
+
+/**
+ * 取得既有工作表；若不存在則建立。
+ */
+function getOrCreateSheet_(spreadsheet, sheetName) {
+  return spreadsheet.getSheetByName(sheetName) || spreadsheet.insertSheet(sheetName);
+}
+
+/**
+ * 讀取 A1/B1 日期；若空白，預設抓取下個月整月。
+ */
+function getOrCreateDateRange_(sheet) {
+  const tz = Session.getScriptTimeZone();
+  let startDate = sheet.getRange(CALENDAR_LESSON_CONFIG.dateRangeCells.start).getValue();
+  let endDate = sheet.getRange(CALENDAR_LESSON_CONFIG.dateRangeCells.end).getValue();
+
   if (!startDate || !endDate) {
     const today = new Date();
-    const defaultStart = new Date(today.getFullYear(), today.getMonth() + 1, 1, 0, 0, 0);
-    const defaultEnd = new Date(today.getFullYear(), today.getMonth() + 2, 0, 23, 59, 59);
+    startDate = new Date(today.getFullYear(), today.getMonth() + 1, 1, 0, 0, 0);
+    endDate = new Date(today.getFullYear(), today.getMonth() + 2, 0, 23, 59, 59);
 
-    startDate = defaultStart;
-    endDate = defaultEnd;
-
-    sheet.getRange('A1').setValue(Utilities.formatDate(defaultStart, tz, 'yyyy/MM/dd'));
-    sheet.getRange('B1').setValue(Utilities.formatDate(defaultEnd, tz, 'yyyy/MM/dd'));
+    sheet.getRange(CALENDAR_LESSON_CONFIG.dateRangeCells.start).setValue(Utilities.formatDate(startDate, tz, 'yyyy/MM/dd'));
+    sheet.getRange(CALENDAR_LESSON_CONFIG.dateRangeCells.end).setValue(Utilities.formatDate(endDate, tz, 'yyyy/MM/dd'));
   }
 
-  // 3. 清空舊資料
-  sheet.getRange('A2:Z').clearContent();
+  return {
+    startDate: new Date(startDate),
+    endDate: new Date(endDate),
+  };
+}
 
-  // 4. 寫入新的標題列
-  const headers = ['課程', '梯次', '預估營收'];
-  sheet.getRange('A2').offset(0, 0, 1, headers.length).setValues([headers]);
+/**
+ * 清除舊輸出結果，保留 A1/B1 日期設定。
+ */
+function clearOutput_(sheet) {
+  const startRow = CALENDAR_LESSON_CONFIG.headerRow;
+  const maxRows = sheet.getMaxRows() - startRow + 1;
 
-  // 5. 定義要篩選的關鍵字清單
-  const keywords = ['公開', 'S003', 'S007', 'S010', 'S012', 'S014', 'S217', 'S216'];
-
-  // 6. 讀取 Google 日曆事件並加入權限防呆
-  const calendar = CalendarApp.getCalendarById(calendarId);
-  if (!calendar) {
-    SpreadsheetApp.getUi().alert('找不到指定的日曆，請檢查日曆 ID 是否正確。');
-    return; 
+  if (maxRows > 0) {
+    sheet.getRange(startRow, 1, maxRows, CALENDAR_LESSON_CONFIG.headers.length).clearContent();
   }
-  const events = calendar.getEvents(startDate, endDate);
+}
 
-  // 7. 篩選出標題包含關鍵字的事件
-  const filteredEvents = events.filter(e => {
-    const title = e.getTitle();
-    return keywords.some(keyword => title.includes(keyword));
-  });
+/**
+ * 寫入表頭。
+ */
+function writeHeaders_(sheet) {
+  sheet
+    .getRange(CALENDAR_LESSON_CONFIG.headerRow, 1, 1, CALENDAR_LESSON_CONFIG.headers.length)
+    .setValues([CALENDAR_LESSON_CONFIG.headers]);
+}
 
-  // 8. 組資料：抓取標題、開始時間，並多抓精確時間戳記用作排序
-  const allData = filteredEvents.map(e => [
-    e.getTitle().trim(),
-    Utilities.formatDate(e.getStartTime(), tz, 'yyMMdd'),
-    e.getStartTime().getTime() // 暫時存放精確時間戳記（毫秒）
-  ]);
+/**
+ * 判斷事件是否為公開班課程。
+ */
+function isPublicLessonEvent_(event) {
+  const title = event.getTitle().trim();
+  return CALENDAR_LESSON_CONFIG.titleKeywords.some(keyword => title.includes(keyword));
+}
 
-  // 🌟 新增：自訂雙重排序邏輯
-  allData.sort((a, b) => {
-    // 第一層：比較日曆「開始時間」
-    if (a[2] !== b[2]) {
-      return a[2] - b[2]; // 時間早的排前面
-    }
-    // 第二層：如果開始時間完全一樣，則依據「課程」欄位資料排序 A 到 Z
-    return a[0].localeCompare(b[0], 'zh-TW');
-  });
+/**
+ * 將 Calendar 事件轉成課程輸出資料。
+ */
+function buildLessonRow_(event) {
+  const title = event.getTitle().trim();
+  const sessionFromTitle = extractSessionFromTitle_(title);
 
-  // 排序完後，將用於排序的時間戳記移除，恢復成試算表原本的 2 欄格式
-  allData.forEach(row => row.pop());
+  return {
+    course: normalizeCourseTitle_(title),
+    session: sessionFromTitle || formatSessionFromDate_(event.getStartTime()),
+    startTime: event.getStartTime().getTime(),
+  };
+}
 
-  // 9. 寫入事件資料與比對公式
-  if (allData.length > 0) {
-    // 寫入 A 欄與 B 欄的日曆資料
-    sheet.getRange(3, 1, allData.length, 2).setValues(allData);
-    
-    const formulas = [];
-    for (let i = 0; i < allData.length; i++) {
-      const row = i + 3; // 資料從第 3 行開始
-      
-      // 💡 終極優化版公式：使用 "([A-Za-z0-9]+)(公開|直播)" 
-      // 邏輯：只要遇到「公開」或「直播」，就會精準把左邊的代碼（如 512、S003）挖出來
-      const formula = `=INDEX('開班人數'!$A:$Z, MATCH(IFERROR(REGEXEXTRACT(A${row}, "([A-Za-z0-9]+)(?:公開|直播|講座)"), A${row}), '開班人數'!$A:$A, 0), MATCH("期望金額(c)=a*b", '開班人數'!$2:$2, 0))`;
-      formulas.push([formula]);
-    }
-    
-    // 將公式批次寫入 C 欄
-    sheet.getRange(3, 3, allData.length, 1).setFormulas(formulas);
+/**
+ * 優先從事件標題擷取 S 開頭的梯次代碼，例如 S003、S217。
+ */
+function extractSessionFromTitle_(title) {
+  const match = title.match(/S\d{3}/i);
+  return match ? match[0].toUpperCase() : '';
+}
+
+/**
+ * 若標題沒有明確梯次代碼，使用課程開始日期作為梯次備援值。
+ */
+function formatSessionFromDate_(date) {
+  return Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyMMdd');
+}
+
+/**
+ * 整理課程名稱：移除常見公開班標記與 S 開頭梯次代碼。
+ */
+function normalizeCourseTitle_(title) {
+  return title
+    .replace(/\[[^\]]*公開班?[^\]]*\]/g, '')
+    .replace(/【[^】]*公開班?[^】]*】/g, '')
+    .replace(/公開班?/g, '')
+    .replace(/S\d{3}/ig, '')
+    .replace(/[｜|／/＿_\-—–]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * 依開始時間排序；同時間再依課程名稱排序。
+ */
+function sortLessonRows_(a, b) {
+  if (a.startTime !== b.startTime) {
+    return a.startTime - b.startTime;
   }
 
-  // 10. 在資料最下方顯示總筆數
-  sheet.getRange(allData.length + 3, 1).setValue('資料筆數：' + allData.length);
+  return a.course.localeCompare(b.course, 'zh-TW');
 }
