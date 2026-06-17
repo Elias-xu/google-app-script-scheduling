@@ -1,8 +1,8 @@
 /**
- * Google Apps Script: 從 Google Calendar 抓取公開班課程。
+ * Google Apps Script: export public lessons from Google Calendar.
  *
- * 輸出目標固定為 README.md 內的 Google Sheet 連結，分頁名稱為「公開班課程」。
- * 輸出欄位只保留：課程、梯次。
+ * Output target: the Google Sheet linked in README.md, sheet name "公開班課程".
+ * Output columns: 課程, 梯次.
  */
 const CALENDAR_LESSON_CONFIG = {
   spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/1tECC_DRqV0rgUnkggrOz-DJXNRwiJ-ishLR2H3c7Quc/edit?gid=0#gid=0',
@@ -17,9 +17,6 @@ const CALENDAR_LESSON_CONFIG = {
   titleKeywords: ['公開', 'S003', 'S007', 'S010', 'S012', 'S014', 'S216', 'S217'],
 };
 
-/**
- * 當試算表開啟時，自動建立自訂選單。
- */
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('📌自訂功能')
@@ -27,9 +24,6 @@ function onOpen() {
     .addToUi();
 }
 
-/**
- * 從指定 Google Calendar 抓取公開班課程，並寫入 README 連結內的「公開班課程」分頁。
- */
 function exportCalendarLessonsToSheet() {
   const ss = SpreadsheetApp.openByUrl(CALENDAR_LESSON_CONFIG.spreadsheetUrl);
   const sheet = getOrCreateSheet_(ss, CALENDAR_LESSON_CONFIG.outputSheetName);
@@ -64,16 +58,10 @@ function exportCalendarLessonsToSheet() {
   SpreadsheetApp.getActiveSpreadsheet().toast('公開班課程抓取完成：' + rows.length + ' 筆');
 }
 
-/**
- * 取得既有工作表；若不存在則建立。
- */
 function getOrCreateSheet_(spreadsheet, sheetName) {
   return spreadsheet.getSheetByName(sheetName) || spreadsheet.insertSheet(sheetName);
 }
 
-/**
- * 讀取 A1/B1 日期；若空白，預設抓取下個月整月。
- */
 function getOrCreateDateRange_(sheet) {
   const tz = Session.getScriptTimeZone();
   let startDate = sheet.getRange(CALENDAR_LESSON_CONFIG.dateRangeCells.start).getValue();
@@ -94,9 +82,6 @@ function getOrCreateDateRange_(sheet) {
   };
 }
 
-/**
- * 清除舊輸出結果，保留 A1/B1 日期設定。
- */
 function clearOutput_(sheet) {
   const startRow = CALENDAR_LESSON_CONFIG.headerRow;
   const maxRows = sheet.getMaxRows() - startRow + 1;
@@ -106,69 +91,50 @@ function clearOutput_(sheet) {
   }
 }
 
-/**
- * 寫入表頭。
- */
 function writeHeaders_(sheet) {
   sheet
     .getRange(CALENDAR_LESSON_CONFIG.headerRow, 1, 1, CALENDAR_LESSON_CONFIG.headers.length)
     .setValues([CALENDAR_LESSON_CONFIG.headers]);
 }
 
-/**
- * 判斷事件是否為公開班課程。
- */
 function isPublicLessonEvent_(event) {
   const title = event.getTitle().trim();
   return CALENDAR_LESSON_CONFIG.titleKeywords.some(keyword => title.includes(keyword));
 }
 
-/**
- * 將 Calendar 事件轉成課程輸出資料。
- */
 function buildLessonRow_(event) {
   const title = event.getTitle().trim();
-  const sessionFromTitle = extractSessionFromTitle_(title);
+  const course = normalizeCourseTitle_(title);
+  const courseCode = extractCourseCode_(course);
 
   return {
-    course: normalizeCourseTitle_(title),
-    session: sessionFromTitle || formatSessionFromDate_(event.getStartTime()),
+    course,
+    session: formatSession_(courseCode, event.getStartTime()),
     startTime: event.getStartTime().getTime(),
   };
 }
 
-/**
- * 優先從事件標題擷取 S 開頭的梯次代碼，例如 S003、S217。
- */
-function extractSessionFromTitle_(title) {
-  const match = title.match(/S\d{3}/i);
-  return match ? match[0].toUpperCase() : '';
+function extractCourseCode_(courseTitle) {
+  const match = String(courseTitle || '').trim().match(/^([A-Za-z]?\d{3})/);
+  return match ? match[1].toUpperCase() : '';
 }
 
-/**
- * 若標題沒有明確梯次代碼，使用課程開始日期作為梯次備援值。
- */
-function formatSessionFromDate_(date) {
-  return Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyMMdd');
+function formatSession_(courseCode, date) {
+  const dateCode = Utilities.formatDate(date, Session.getScriptTimeZone(), 'yyMMdd');
+  return courseCode ? courseCode + '-' + dateCode : dateCode;
 }
 
-/**
- * 整理課程名稱：移除常見公開班標記與 S 開頭梯次代碼。
- */
 function normalizeCourseTitle_(title) {
   return title
     .replace(/\[[^\]]*公開班?[^\]]*\]/g, '')
     .replace(/【[^】]*公開班?[^】]*】/g, '')
     .replace(/公開班?/g, '')
-    .replace(/S\d{3}/ig, '')
     .replace(/[｜|／/＿_\-—–]+/g, ' ')
     .replace(/\s+/g, ' ')
+    .replace(/^([A-Za-z]?\d{3})\s+/, '$1')
     .trim();
 }
 
-/**
- * 依開始時間排序；同時間再依課程名稱排序。
- */
 function sortLessonRows_(a, b) {
   if (a.startTime !== b.startTime) {
     return a.startTime - b.startTime;
