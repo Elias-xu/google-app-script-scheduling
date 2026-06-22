@@ -21,6 +21,9 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('📌自訂功能')
     .addItem('抓取公開班課程', 'exportCalendarLessonsToSheet')
+    .addSeparator()
+    .addItem('產生每月課務', 'generateCourseWork')
+    .addItem('重設假日快取', 'refreshHolidayCache')
     .addToUi();
 }
 
