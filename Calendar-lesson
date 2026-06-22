@@ -26,6 +26,7 @@ function onOpen() {
     .addItem('重設假日快取', 'refreshHolidayCache')
     .addSeparator()
     .addItem('分配助教', 'assignTAs')
+    .addItem('每月跟課統計', 'generateTAStats')
     .addToUi();
 }
 
