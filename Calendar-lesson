@@ -79,9 +79,12 @@ function getOrCreateDateRange_(sheet) {
     sheet.getRange(CALENDAR_LESSON_CONFIG.dateRangeCells.end).setValue(Utilities.formatDate(endDate, tz, 'yyyy/MM/dd'));
   }
 
+const end = new Date(endDate);
+  end.setHours(23, 59, 59, 999);
+
   return {
     startDate: new Date(startDate),
-    endDate: new Date(endDate),
+    endDate: end,
   };
 }
 
@@ -118,7 +121,7 @@ function buildLessonRow_(event) {
 }
 
 function extractCourseCode_(courseTitle) {
-  const match = String(courseTitle || '').trim().match(/^([A-Za-z]?\d{3})/);
+  const match = String(courseTitle || '').trim().match(/^([A-Za-z]?\d{3}[a-z]?)/);
   return match ? match[1].toUpperCase() : '';
 }
 
@@ -134,7 +137,7 @@ function normalizeCourseTitle_(title) {
     .replace(/公開班?/g, '')
     .replace(/[｜|／/＿_\-—–]+/g, ' ')
     .replace(/\s+/g, ' ')
-    .replace(/^([A-Za-z]?\d{3})\s+/, '$1')
+    .replace(/^([A-Za-z]?\d{3}[a-z]?)\s+/, '$1')
     .trim();
 }
 
