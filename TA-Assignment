@@ -20,6 +20,7 @@
 const TA_CONFIG_ = {
   taSheetName: '助教名單',
   unavailableSheetName: '不可排班',
+  statsAreaMarker: '助教',
 };
 
 const CONFLICT_SCORE_ = {
@@ -255,4 +256,58 @@ function writeAssignments_(sheet, results, startRow, startCol) {
     if (result === null) return;
     sheet.getRange(startRow + 1, startCol + i * 2 + 1).setValue(result);
   });
+}
+
+
+// ─── TA stats ─────────────────────────────────────────────────────────────────
+function generateTAStats() {
+  const ss = SpreadsheetApp.openByUrl(COURSE_WORK_CONFIG.spreadsheetUrl);
+  const cwSheet = ss.getSheetByName(COURSE_WORK_CONFIG.courseWorkSheetName);
+  const statsHeaderRow = findStatsArea_(cwSheet);
+  if (statsHeaderRow === -1) {
+    SpreadsheetApp.getUi().alert('找不到助教統計區，請確認「公開班課程工作」A 欄有「助教」標題列。');
+    return;
+  }
+  const lastRow = cwSheet.getLastRow();
+  const taRows = [];
+  for (let r = statsHeaderRow + 1; r <= lastRow; r++) {
+    const val = String(cwSheet.getRange(r, 1).getValue() || '').trim();
+    if (!val) break;
+    taRows.push({ row: r, code: val.toUpperCase() });
+  }
+  if (taRows.length === 0) {
+    SpreadsheetApp.getUi().alert('找不到助教代碼，請確認「助教」標題列下方有助教代碼。');
+    return;
+  }
+  const counts = {};
+  taRows.forEach(({ code }) => (counts[code] = 0));
+  const { startRow, startCol } = findCoursesArea_(cwSheet);
+  const lastCol = cwSheet.getLastColumn();
+  if (lastCol >= startCol + 1) {
+    const numCols = lastCol - startCol;
+    const rowValues = cwSheet.getRange(startRow + 1, startCol + 1, 1, numCols).getValues()[0];
+    for (let i = 0; i < rowValues.length; i += 2) {
+      const val = String(rowValues[i] || '').trim();
+      if (!val) continue;
+      const codes = (val.match(/[A-Za-z]{2,}/g) || []).map(c => c.toUpperCase());
+      for (const code of codes) {
+        if (Object.prototype.hasOwnProperty.call(counts, code)) counts[code]++;
+      }
+    }
+  }
+  taRows.forEach(({ row, code }) => {
+    cwSheet.getRange(row, 2).setValue(counts[code]);
+  });
+  SpreadsheetApp.getActiveSpreadsheet().toast('每月跟課統計已更新：' + taRows.length + ' 位助教');
+}
+function findStatsArea_(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 1) return -1;
+  const colA = sheet.getRange(1, 1, lastRow, 1).getValues();
+  for (let i = 0; i < colA.length; i++) {
+    if (String(colA[i][0] || '').trim() === TA_CONFIG_.statsAreaMarker) {
+      return i + 1;
+    }
+  }
+  return -1;
 }
