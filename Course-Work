@@ -249,10 +249,9 @@ function buildCourseBlock_(course, rules, holidays) {
 
   for (const key of dateOrder) {
     const { date, tasks } = dateGroups.get(key);
-    rows.push(['日期', formatDisplayDate_(date)]);
-    for (const task of tasks) {
-      rows.push(['', task]);
-    }
+    tasks.forEach((task, i) => {
+      rows.push([i === 0 ? formatDisplayDate_(date) : '', task]);
+    });
   }
 
   return rows;
