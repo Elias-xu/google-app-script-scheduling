@@ -193,13 +193,16 @@ function computeAssignments_(courses, tas, unavailable, existing) {
     assignedD0Keys[ta.name] = new Set();
   });
 
-  // Seed consecutive-day tracking from existing assignments
+  // Seed from existing assignments: track dates and count
   existing.forEach((val, i) => {
     if (!val) return;
     const codes = (val.match(/[A-Za-z]{2,}/g) || []).map(c => c.toUpperCase());
     for (const code of codes) {
       const ta = tas.find(t => extractTACode_(t.name) === code);
-      if (ta) assignedD0Keys[ta.name].add(courses[i].d0Key);
+      if (ta) {
+        assignedD0Keys[ta.name].add(courses[i].d0Key);
+        assignCount[ta.name]++;
+      }
     }
   });
 
@@ -218,7 +221,7 @@ function computeAssignments_(courses, tas, unavailable, existing) {
       })
       .map(ta => {
         let score = 0;
-        if (assignedD0Keys[ta.name].has(prevKey) || assignedD0Keys[ta.name].has(nextKey)) {
+         if (assignedD0Keys[ta.name].has(course.d0Key)) {
           score += CONFLICT_SCORE_.consecutive;
         }
         if (unav(ta).has(toDateKey_(course.d5))) score += CONFLICT_SCORE_.d5;
