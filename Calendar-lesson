@@ -24,6 +24,8 @@ function onOpen() {
     .addSeparator()
     .addItem('產生每月課務', 'generateCourseWork')
     .addItem('重設假日快取', 'refreshHolidayCache')
+    .addSeparator()
+    .addItem('分配助教', 'assignTAs')
     .addToUi();
 }
 
