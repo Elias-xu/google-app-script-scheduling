@@ -1,0 +1,258 @@
+/**
+ * Google Apps Script: assign TAs to public course sessions.
+ *
+ * Reads from:
+ *   - "助教名單": TA list with 可獨立跟課起始日
+ *   - "不可排班": unavailable dates per TA
+ *   - "公開班課程": course list with 跟課人數
+ *   - "公開班課程工作": existing assignments (not overwritten)
+ *
+ * Assignment rules:
+ *   Hard: course day must not be on TA's unavailable date
+ *   Hard: no consecutive course days (large penalty if unavoidable)
+ *   Soft: minimize work-day conflicts (d1 worst, d5 least bad)
+ *   Soft: prefer TA with fewer assignments in this batch
+ *
+ * Output format: TA code(s) joined by comma (e.g. "SL" or "SL,YS")
+ * Cells already filled are not overwritten.
+ */
+
+const TA_CONFIG_ = {
+  taSheetName: '助教名單',
+  unavailableSheetName: '不可排班',
+};
+
+const CONFLICT_SCORE_ = {
+  consecutive: 100,
+  d1: 4,
+  dMid: 2,
+  d5: 1,
+  dAfter: 1,
+};
+
+// ─── Entry point ──────────────────────────────────────────────────────────────
+
+function assignTAs() {
+  const ss = SpreadsheetApp.openByUrl(COURSE_WORK_CONFIG.spreadsheetUrl);
+  const cwSheet = ss.getSheetByName(COURSE_WORK_CONFIG.courseWorkSheetName);
+
+  const tas = readTAList_(ss);
+  if (tas.length === 0) {
+    SpreadsheetApp.getUi().alert('找不到助教名單，請確認「助教名單」分頁有資料。');
+    return;
+  }
+
+  const courses = readCoursesWithCount_(ss);
+  if (courses.length === 0) {
+    SpreadsheetApp.getUi().alert('找不到課程資料，請先執行「抓取公開班課程」。');
+    return;
+  }
+
+  const years = [...new Set(courses.map(c => c.date.getFullYear()))];
+  const holidays = new Set();
+  for (const year of years) {
+    getHolidays_(year).forEach(d => holidays.add(d));
+  }
+
+  const coursesWithDates = courses.map(c => addWorkDates_(c, holidays));
+
+  const refYear = courses[0].date.getFullYear();
+  const unavailableRaw = readUnavailableDates_(ss);
+  const unavailable = {};
+  for (const ta of tas) {
+    unavailable[ta.name] = parseUnavailableDates_(unavailableRaw[ta.name] || [], refYear);
+  }
+
+  const { startRow, startCol } = findCoursesArea_(cwSheet);
+  const existing = readExistingAssignments_(cwSheet, startRow, startCol, courses.length);
+
+  const results = computeAssignments_(coursesWithDates, tas, unavailable, existing);
+  writeAssignments_(cwSheet, results, startRow, startCol);
+
+  const assigned = results.filter(r => r !== null).length;
+  SpreadsheetApp.getActiveSpreadsheet().toast('助教分配完成：' + assigned + ' 堂已分配');
+}
+
+// ─── Read TA list ─────────────────────────────────────────────────────────────
+
+function readTAList_(ss) {
+  const sheet = ss.getSheetByName(TA_CONFIG_.taSheetName);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 2) return [];
+
+  return sheet.getRange(2, 1, lastRow - 1, 2).getValues()
+    .map(([independenceDate, name]) => ({
+      name: String(name || '').trim(),
+      independenceDate: independenceDate ? new Date(independenceDate) : null,
+    }))
+    .filter(({ name }) => name);
+}
+
+// ─── Read unavailable dates ───────────────────────────────────────────────────
+
+function readUnavailableDates_(ss) {
+  const sheet = ss.getSheetByName(TA_CONFIG_.unavailableSheetName);
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow < 2 || lastCol < 2) return {};
+
+  const data = sheet.getRange(2, 1, lastRow - 1, lastCol).getValues();
+  const result = {};
+  for (const row of data) {
+    const name = String(row[0] || '').trim();
+    if (!name) continue;
+    result[name] = row.slice(1).map(v => String(v || '').trim()).filter(Boolean);
+  }
+  return result;
+}
+
+function parseUnavailableDates_(rawEntries, refYear) {
+  const dates = new Set();
+  for (const s of rawEntries) {
+    // Cross-month range: M/D-M/D  e.g. 7/25-8/5
+    let m = s.match(/^(\d{1,2})\/(\d{1,2})-(\d{1,2})\/(\d{1,2})$/);
+    if (m) {
+      addDateRange_(dates, refYear, +m[1] - 1, +m[2], +m[3] - 1, +m[4]);
+      continue;
+    }
+    // Same-month range: M/D-D  e.g. 7/10-20
+    m = s.match(/^(\d{1,2})\/(\d{1,2})-(\d{1,2})$/);
+    if (m) {
+      addDateRange_(dates, refYear, +m[1] - 1, +m[2], +m[1] - 1, +m[3]);
+      continue;
+    }
+    // Single date: M/D  e.g. 7/1
+    m = s.match(/^(\d{1,2})\/(\d{1,2})$/);
+    if (m) {
+      dates.add(toDateKey_(new Date(refYear, +m[1] - 1, +m[2])));
+    }
+  }
+  return dates;
+}
+
+function addDateRange_(set, year, startMonth, startDay, endMonth, endDay) {
+  const end = new Date(year, endMonth, endDay);
+  let d = new Date(year, startMonth, startDay);
+  while (d <= end) {
+    set.add(toDateKey_(d));
+    d.setDate(d.getDate() + 1);
+  }
+}
+
+function toDateKey_(date) {
+  return Utilities.formatDate(date, 'Asia/Taipei', 'yyyyMMdd');
+}
+
+// ─── Read courses with TA count ───────────────────────────────────────────────
+
+function readCoursesWithCount_(ss) {
+  const sheet = ss.getSheetByName(COURSE_WORK_CONFIG.courseSheetName);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 3) return [];
+
+  return sheet.getRange(3, 1, lastRow - 2, 3).getValues()
+    .map(([name, session, taCount]) => ({
+      name: String(name || '').trim(),
+      session: String(session || '').trim(),
+      taCount: Math.max(1, parseInt(taCount) || 1),
+    }))
+    .filter(({ session }) => session.includes('-'))
+    .map(({ name, session, taCount }) => ({ name, session, taCount, date: parseCourseDate_(session) }))
+    .filter(({ date }) => date !== null)
+    .sort((a, b) => a.date - b.date);
+}
+
+// ─── Compute work dates for a course ─────────────────────────────────────────
+
+function addWorkDates_(course, holidays) {
+  const d0 = course.date;
+  const d5 = subtractWorkingDays_(d0, 5, holidays);
+  const d1 = subtractWorkingDays_(d0, 1, holidays);
+  const dMid = getMidWorkingDay_(d5, d1, holidays);
+  const dAfter = addWorkingDays_(d0, 1, holidays);
+  return { ...course, d5, dMid, d1, d0, dAfter, d0Key: toDateKey_(d0) };
+}
+
+// ─── Read existing assignments ────────────────────────────────────────────────
+
+function readExistingAssignments_(sheet, startRow, startCol, count) {
+  return Array.from({ length: count }, (_, i) => {
+    const val = sheet.getRange(startRow + 1, startCol + i * 2 + 1).getValue();
+    return String(val || '').trim() || null;
+  });
+}
+
+// ─── Assignment logic ─────────────────────────────────────────────────────────
+
+function computeAssignments_(courses, tas, unavailable, existing) {
+  const assignCount = {};
+  const assignedD0Keys = {};
+  tas.forEach(ta => {
+    assignCount[ta.name] = 0;
+    assignedD0Keys[ta.name] = new Set();
+  });
+
+  // Seed consecutive-day tracking from existing assignments
+  existing.forEach((val, i) => {
+    if (!val) return;
+    const codes = (val.match(/[A-Za-z]{2,}/g) || []).map(c => c.toUpperCase());
+    for (const code of codes) {
+      const ta = tas.find(t => extractTACode_(t.name) === code);
+      if (ta) assignedD0Keys[ta.name].add(courses[i].d0Key);
+    }
+  });
+
+  return courses.map((course, i) => {
+    if (existing[i]) return null;
+
+    const prevKey = toDateKey_(new Date(course.d0.getTime() - 86400000));
+    const nextKey = toDateKey_(new Date(course.d0.getTime() + 86400000));
+    const unav = (ta) => unavailable[ta.name] || new Set();
+
+    const scored = tas
+      .filter(ta => {
+        if (ta.independenceDate && course.date < ta.independenceDate) return false;
+        if (unav(ta).has(course.d0Key)) return false;
+        return true;
+      })
+      .map(ta => {
+        let score = 0;
+        if (assignedD0Keys[ta.name].has(prevKey) || assignedD0Keys[ta.name].has(nextKey)) {
+          score += CONFLICT_SCORE_.consecutive;
+        }
+        if (unav(ta).has(toDateKey_(course.d5))) score += CONFLICT_SCORE_.d5;
+        if (unav(ta).has(toDateKey_(course.dMid))) score += CONFLICT_SCORE_.dMid;
+        if (unav(ta).has(toDateKey_(course.d1))) score += CONFLICT_SCORE_.d1;
+        if (unav(ta).has(toDateKey_(course.dAfter))) score += CONFLICT_SCORE_.dAfter;
+        return { ta, score, count: assignCount[ta.name] };
+      })
+      .sort((a, b) => a.score - b.score || a.count - b.count);
+
+    if (scored.length === 0) return '（無可用助教）';
+
+    const assigned = [];
+    for (let j = 0; j < course.taCount; j++) {
+      const pick = scored.find(s => !assigned.includes(s.ta.name));
+      if (!pick) break;
+      assigned.push(pick.ta.name);
+      assignCount[pick.ta.name]++;
+      assignedD0Keys[pick.ta.name].add(course.d0Key);
+    }
+
+    return assigned.map(extractTACode_).join(',');
+  });
+}
+
+function extractTACode_(taName) {
+  const m = String(taName).match(/[A-Za-z]+$/);
+  return m ? m[0].toUpperCase() : taName;
+}
+
+// ─── Write assignments ────────────────────────────────────────────────────────
+
+function writeAssignments_(sheet, results, startRow, startCol) {
+  results.forEach((result, i) => {
+    if (result === null) return;
+    sheet.getRange(startRow + 1, startCol + i * 2 + 1).setValue(result);
+  });
+}
