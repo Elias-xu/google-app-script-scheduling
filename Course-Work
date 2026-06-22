@@ -1,0 +1,295 @@
+/**
+ * Google Apps Script: generate monthly course work schedule.
+ *
+ * Reads work rules from "公開班課程工作" sheet (columns A-B),
+ * reads course list from "公開班課程" sheet, then writes one
+ * task-timeline block per course into the "每月課務" area (column C onward).
+ *
+ * Holiday data source: data.gov.tw dataset 14718
+ * Update HOLIDAY_RESOURCE_ID manually each January.
+ * https://data.gov.tw/dataset/14718
+ */
+
+const COURSE_WORK_CONFIG = {
+  spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/1tECC_DRqV0rgUnkggrOz-DJXNRwiJ-ishLR2H3c7Quc/edit',
+  courseSheetName: '公開班課程',
+  courseWorkSheetName: '公開班課程工作',
+
+  // 每年一月從 data.gov.tw 資料集 14718 手動更新
+  holidayResourceId: 'PLEASE_UPDATE_FOR_2026',
+
+  // 每月課務從第幾欄開始（A=1, B=2, C=3）
+  coursesStartCol: 3,
+
+  // 工作規則區域在 A-B 欄，以此標記字串定位起始列
+  rulesAreaMarker: '工作規則',
+};
+
+const TIMING_ = {
+  FIVE_BEFORE: '開課前5個工作天',
+  MIDPOINT: '中間值',
+  ONE_BEFORE: '開課前1個工作天',
+  COURSE_DAY: '課程當天',
+  ONE_AFTER: '課後一天',
+};
+
+// ─── 主流程 ──────────────────────────────────────────────────────────────────
+
+function generateCourseWork() {
+  const ss = SpreadsheetApp.openByUrl(COURSE_WORK_CONFIG.spreadsheetUrl);
+  const courseWorkSheet = ss.getSheetByName(COURSE_WORK_CONFIG.courseWorkSheetName);
+
+  const rules = readWorkRules_(courseWorkSheet);
+  if (rules.length === 0) {
+    SpreadsheetApp.getUi().alert('找不到工作規則，請確認「公開班課程工作」A-B 欄有完整的工作規則資料。');
+    return;
+  }
+
+  const courses = readCourseList_(ss);
+  if (courses.length === 0) {
+    SpreadsheetApp.getUi().alert('找不到課程資料，請先執行「抓取公開班課程」。');
+    return;
+  }
+
+  const years = [...new Set(courses.map(c => c.date.getFullYear()))];
+  const holidays = new Set();
+  for (const year of years) {
+    getHolidays_(year).forEach(d => holidays.add(d));
+  }
+
+  const blocks = courses.map(course => buildCourseBlock_(course, rules, holidays));
+
+  const { startRow, startCol } = findCoursesArea_(courseWorkSheet);
+  clearCoursesSection_(courseWorkSheet, startRow, startCol);
+  writeCourseBlocks_(courseWorkSheet, blocks, startRow, startCol);
+
+  SpreadsheetApp.getActiveSpreadsheet().toast('每月課務產生完成：' + courses.length + ' 堂課');
+}
+
+function refreshHolidayCache() {
+  const props = PropertiesService.getScriptProperties();
+  const allProps = props.getProperties();
+  Object.keys(allProps)
+    .filter(k => k.startsWith('holidays_'))
+    .forEach(k => props.deleteProperty(k));
+  SpreadsheetApp.getActiveSpreadsheet().toast('假日快取已清除，下次產生課務時將重新從 API 抓取。');
+}
+
+// ─── 讀取工作規則 ─────────────────────────────────────────────────────────────
+
+function readWorkRules_(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 1) return [];
+
+  const data = sheet.getRange(1, 1, lastRow, 2).getValues();
+  const validTimings = new Set(Object.values(TIMING_));
+  const sectionLabels = new Set(['工作規則', '課前工作', '課後工作', '課程工作']);
+
+  return data
+    .map(([task, timing]) => [String(task || '').trim(), String(timing || '').trim()])
+    .filter(([task, timing]) => task && !sectionLabels.has(task) && validTimings.has(timing))
+    .map(([task, timing]) => ({ task, timing }));
+}
+
+// ─── 讀取課程清單 ─────────────────────────────────────────────────────────────
+
+function readCourseList_(ss) {
+  const sheet = ss.getSheetByName(COURSE_WORK_CONFIG.courseSheetName);
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 3) return [];
+
+  return sheet.getRange(3, 1, lastRow - 2, 2).getValues()
+    .map(([name, session]) => ({
+      name: String(name || '').trim(),
+      session: String(session || '').trim(),
+    }))
+    .filter(({ session }) => session.includes('-'))
+    .map(({ name, session }) => ({ name, session, date: parseCourseDate_(session) }))
+    .filter(({ date }) => date !== null)
+    .sort((a, b) => a.date - b.date);
+}
+
+function parseCourseDate_(sessionCode) {
+  const match = sessionCode.match(/-(\d{6})$/);
+  if (!match) return null;
+  const s = match[1];
+  const year = 2000 + parseInt(s.slice(0, 2), 10);
+  const month = parseInt(s.slice(2, 4), 10) - 1;
+  const day = parseInt(s.slice(4, 6), 10);
+  const date = new Date(year, month, day);
+  return isNaN(date.getTime()) ? null : date;
+}
+
+// ─── 假日資料 ─────────────────────────────────────────────────────────────────
+
+function getHolidays_(year) {
+  const props = PropertiesService.getScriptProperties();
+  const cacheKey = 'holidays_' + year;
+  const cached = props.getProperty(cacheKey);
+  if (cached) return new Set(JSON.parse(cached));
+
+  const fetched = fetchHolidaysFromApi_();
+  if (fetched.size > 0) {
+    props.setProperty(cacheKey, JSON.stringify([...fetched]));
+  }
+  return fetched;
+}
+
+function fetchHolidaysFromApi_() {
+  const resourceId = COURSE_WORK_CONFIG.holidayResourceId;
+  if (!resourceId || resourceId.startsWith('PLEASE_UPDATE')) {
+    Logger.log('Holiday resource ID not set. Falling back to weekend-only calculation.');
+    return new Set();
+  }
+
+  const url = 'https://data.gov.tw/api/v2/rest/datastore/' + resourceId + '?format=json&limit=400';
+  try {
+    const res = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+    if (res.getResponseCode() !== 200) {
+      Logger.log('Holiday API returned status: ' + res.getResponseCode());
+      return new Set();
+    }
+    const json = JSON.parse(res.getContentText());
+    const records = ((json.result || {}).records) || [];
+    const holidays = new Set();
+    records.forEach(r => {
+      // 是否放假: '1' = 休假, '0' = 上班, '2' = 補班（照常上班）
+      if (r['是否放假'] === '1') holidays.add(r['西元日期']); // format: YYYYMMDD
+    });
+    return holidays;
+  } catch (e) {
+    Logger.log('Holiday API error: ' + e.message);
+    return new Set();
+  }
+}
+
+// ─── 工作天計算 ───────────────────────────────────────────────────────────────
+
+function isWorkingDay_(date, holidays) {
+  if (holidays.size > 0) {
+    const dateStr = Utilities.formatDate(date, 'Asia/Taipei', 'yyyyMMdd');
+    return !holidays.has(dateStr);
+  }
+  const dow = date.getDay();
+  return dow !== 0 && dow !== 6;
+}
+
+function subtractWorkingDays_(date, n, holidays) {
+  const d = new Date(date);
+  let count = 0;
+  while (count < n) {
+    d.setDate(d.getDate() - 1);
+    if (isWorkingDay_(d, holidays)) count++;
+  }
+  return d;
+}
+
+function addWorkingDays_(date, n, holidays) {
+  const d = new Date(date);
+  let count = 0;
+  while (count < n) {
+    d.setDate(d.getDate() + 1);
+    if (isWorkingDay_(d, holidays)) count++;
+  }
+  return d;
+}
+
+function getMidWorkingDay_(dateA, dateB, holidays) {
+  const mid = new Date((dateA.getTime() + dateB.getTime()) / 2);
+  if (isWorkingDay_(mid, holidays)) return mid;
+  const prev = new Date(mid);
+  const next = new Date(mid);
+  for (let i = 1; i <= 7; i++) {
+    prev.setDate(prev.getDate() - 1);
+    if (isWorkingDay_(prev, holidays)) return prev;
+    next.setDate(next.getDate() + 1);
+    if (isWorkingDay_(next, holidays)) return next;
+  }
+  return mid;
+}
+
+// ─── 組建課程區塊 ─────────────────────────────────────────────────────────────
+
+function buildCourseBlock_(course, rules, holidays) {
+  const d0 = course.date;
+  const d5 = subtractWorkingDays_(d0, 5, holidays);
+  const d1 = subtractWorkingDays_(d0, 1, holidays);
+  const dMid = getMidWorkingDay_(d5, d1, holidays);
+  const dAfter = addWorkingDays_(d0, 1, holidays);
+
+  const timingToDate = {
+    [TIMING_.FIVE_BEFORE]: d5,
+    [TIMING_.MIDPOINT]: dMid,
+    [TIMING_.ONE_BEFORE]: d1,
+    [TIMING_.COURSE_DAY]: d0,
+    [TIMING_.ONE_AFTER]: dAfter,
+  };
+
+  // Group tasks by their calculated date, preserving rule order within each group
+  const dateGroups = new Map();
+  const dateOrder = [];
+
+  for (const { task, timing } of rules) {
+    const taskDate = timingToDate[timing];
+    if (!taskDate) continue;
+    const key = taskDate.getTime();
+    if (!dateGroups.has(key)) {
+      dateGroups.set(key, { date: taskDate, tasks: [] });
+      dateOrder.push(key);
+    }
+    dateGroups.get(key).tasks.push(task);
+  }
+
+  dateOrder.sort((a, b) => a - b);
+
+  const rows = [
+    ['課程梯次', course.session],
+    ['跟課助教', ''],
+  ];
+
+  for (const key of dateOrder) {
+    const { date, tasks } = dateGroups.get(key);
+    rows.push(['日期', formatDisplayDate_(date)]);
+    for (const task of tasks) {
+      rows.push(['', task]);
+    }
+  }
+
+  return rows;
+}
+
+function formatDisplayDate_(date) {
+  return (date.getMonth() + 1) + '/' + date.getDate();
+}
+
+// ─── 定位與寫入工作表 ─────────────────────────────────────────────────────────
+
+function findCoursesArea_(sheet) {
+  const lastRow = sheet.getLastRow();
+  if (lastRow < 1) return { startRow: 2, startCol: COURSE_WORK_CONFIG.coursesStartCol };
+
+  const colA = sheet.getRange(1, 1, lastRow, 1).getValues();
+  for (let i = 0; i < colA.length; i++) {
+    if (String(colA[i][0] || '').trim() === COURSE_WORK_CONFIG.rulesAreaMarker) {
+      return { startRow: i + 1, startCol: COURSE_WORK_CONFIG.coursesStartCol };
+    }
+  }
+  return { startRow: 2, startCol: COURSE_WORK_CONFIG.coursesStartCol };
+}
+
+function clearCoursesSection_(sheet, startRow, startCol) {
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  if (lastRow < startRow || lastCol < startCol) return;
+  sheet
+    .getRange(startRow, startCol, lastRow - startRow + 1, lastCol - startCol + 1)
+    .clearContent();
+}
+
+function writeCourseBlocks_(sheet, blocks, startRow, startCol) {
+  blocks.forEach((block, idx) => {
+    if (block.length === 0) return;
+    const col = startCol + idx * 2;
+    sheet.getRange(startRow, col, block.length, 2).setValues(block);
+  });
+}
