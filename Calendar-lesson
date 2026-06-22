@@ -121,8 +121,8 @@ function buildLessonRow_(event) {
 }
 
 function extractCourseCode_(courseTitle) {
-  const match = String(courseTitle || '').trim().match(/^([A-Za-z]?\d{3}[a-z]?)/);
-  return match ? match[1].toUpperCase() : '';
+  const match = String(courseTitle || '').trim().match(/^([A-Za-z]?\d{3})([a-z]?)/);
+  return match ? match[1].toUpperCase() + match[2] : '';
 }
 
 function formatSession_(courseCode, date) {
