@@ -315,7 +315,9 @@ function syncUnavailableDatesToCalendars() {
         if (start.getTime() === end.getTime()) {
           cal.createAllDayEvent('N/A', start);
         } else {
-          cal.createAllDayEvent('N/A', start, end);
+          const exclusiveEnd = new Date(end);
+          exclusiveEnd.setDate(exclusiveEnd.getDate() + 1);
+          cal.createAllDayEvent('N/A', start, exclusiveEnd);
         }
         created++;
       } catch (e) {
