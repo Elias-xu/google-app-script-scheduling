@@ -325,3 +325,52 @@ function findStatsArea_(sheet) {
   }
   return -1;
 }
+
+// ─── Custom function: TA schedule lookup ──────────────────────────────────────
+
+/**
+ * 依助教代號列出本月所有跟課項目與日期。
+ * 用法：在儲存格輸入 =getTASchedule(D20)
+ * @param {string} taCode 助教代號，例如 "SL"
+ * @customfunction
+ */
+function getTASchedule(taCode) {
+  const code = String(taCode || '').trim().toUpperCase();
+  if (!code) return [['請輸入助教代號']];
+
+  const cwSheet = SpreadsheetApp.getActiveSpreadsheet()
+    .getSheetByName(COURSE_WORK_CONFIG.courseWorkSheetName);
+  if (!cwSheet) return [['找不到「公開班課程工作」工作表']];
+
+  const { startRow, startCol } = findCoursesArea_(cwSheet);
+  const lastRow = cwSheet.getLastRow();
+  const lastCol = cwSheet.getLastColumn();
+  if (lastCol < startCol + 1) return [['找不到課程資料']];
+
+  const data = cwSheet
+    .getRange(startRow, startCol, lastRow - startRow + 1, lastCol - startCol + 1)
+    .getValues();
+
+  const courseBlocks = [];
+
+  for (let c = 0; c + 1 < data[0].length; c += 2) {
+    const taCell = String(data[1][c + 1] || '');
+    const taCodes = (taCell.match(/[A-Za-z]{2,}/g) || []).map(x => x.toUpperCase());
+    if (!taCodes.includes(code)) continue;
+
+    const block = [[String(data[0][c + 1] || ''), taCell]];
+    for (let r = 2; r < data.length; r++) {
+      const task = String(data[r][c + 1] || '');
+      if (!task) continue;
+      block.push([String(data[r][c] || ''), task]);
+    }
+    courseBlocks.push(block);
+  }
+
+  if (courseBlocks.length === 0) return [['查無「' + taCode + '」的課程']];
+
+  const maxRows = Math.max(...courseBlocks.map(b => b.length));
+  return Array.from({ length: maxRows }, (_, r) =>
+    courseBlocks.flatMap(block => r < block.length ? block[r] : ['', ''])
+  );
+}
