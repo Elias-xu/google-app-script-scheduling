@@ -380,4 +380,7 @@ function getTASchedule(taCode) {
   return Array.from({ length: maxRows }, (_, r) =>
     courseBlocks.flatMap(block => r < block.length ? block[r] : ['', ''])
   );
+  } catch(e) {
+    return [['錯誤: ' + e.message]];
+  }
 }
