@@ -369,7 +369,7 @@ function getTASchedule(taCode) {
       block.push([dateStr, task]);
 
     }
-    courseBlocks.push(block);
+    if (block.length > 0) courseBlocks.push(block);
   }
 
   if (courseBlocks.length === 0) return [['查無「' + taCode + '」的課程']];
