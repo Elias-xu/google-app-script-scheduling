@@ -304,23 +304,22 @@ function syncUnavailableDatesToCalendars() {
       continue;
     }
 
-    const dates = parseUnavailableDates_(unavailableRaw[ta.name] || [], refYear);
+    const ranges = parseUnavailableDateRangesForSync_(unavailableRaw[ta.name] || [], refYear);
 
-    for (const dateKey of dates) {
-      const year = parseInt(dateKey.slice(0, 4));
-      const month = parseInt(dateKey.slice(4, 6)) - 1;
-      const day = parseInt(dateKey.slice(6, 8));
-      const date = new Date(year, month, day);
-
-      const existing = cal.getEventsForDay(date)
+    for (const { start, end } of ranges) {
+      const existing = cal.getEventsForDay(start)
         .filter(e => e.isAllDayEvent() && e.getTitle() === 'N/A');
       if (existing.length > 0) { skipped++; continue; }
 
       try {
-        cal.createAllDayEvent('N/A', date);
+        if (start.getTime() === end.getTime()) {
+          cal.createAllDayEvent('N/A', start);
+        } else {
+          cal.createAllDayEvent('N/A', start, end);
+        }
         created++;
       } catch (e) {
-        Logger.log('Error creating event for ' + ta.name + ' on ' + dateKey + ': ' + e.message);
+        Logger.log('Error creating event for ' + ta.name + ' on ' + start + ': ' + e.message);
         errors++;
       }
     }
@@ -330,6 +329,51 @@ function syncUnavailableDatesToCalendars() {
   if (errors > 0) msg += '，' + errors + ' 筆錯誤（請查看 Apps Script Logs）';
   SpreadsheetApp.getActiveSpreadsheet().toast(msg);
 }
+
+function parseUnavailableDateRangesForSync_(rawEntries, refYear) {
+  const ranges = [];
+  for (const s of rawEntries) {
+    // Cross-month range: M/D-M/D  e.g. 7/25-8/5
+    let m = s.match(/^(\d{1,2})\/(\d{1,2})-(\d{1,2})\/(\d{1,2})$/);
+    if (m) {
+      ranges.push({
+        start: new Date(refYear, +m[1] - 1, +m[2]),
+        end: new Date(refYear, +m[3] - 1, +m[4]),
+      });
+      continue;
+    }
+    // Same-month range: M/D-D  e.g. 7/10-20
+    m = s.match(/^(\d{1,2})\/(\d{1,2})-(\d{1,2})$/);
+    if (m) {
+      ranges.push({
+        start: new Date(refYear, +m[1] - 1, +m[2]),
+        end: new Date(refYear, +m[1] - 1, +m[3]),
+      });
+      continue;
+    }
+    // Single date: M/D  e.g. 7/1
+    m = s.match(/^(\d{1,2})\/(\d{1,2})$/);
+    if (m) {
+      const d = new Date(refYear, +m[1] - 1, +m[2]);
+      ranges.push({ start: d, end: d });
+    }
+  }
+  return ranges;
+}
+
+// ─── TA stats ─────────────────────────────────────────────────────────────────
+
+function generateTAStats() {
+  const ss = SpreadsheetApp.openByUrl(COURSE_WORK_CONFIG.spreadsheetUrl);
+  const cwSheet = ss.getSheetByName(COURSE_WORK_CONFIG.courseWorkSheetName);
+
+  const statsHeaderRow = findStatsArea_(cwSheet);
+  if (statsHeaderRow === -1) {
+    SpreadsheetApp.getUi().alert('找不到助教統計區，請確認「公開班課程工作」A 欄有「助教」標題列。');
+    return;
+  }
+
+  const lastRow = cwSheet.getLastRow();
 
 // ─── TA stats ─────────────────────────────────────────────────────────────────
 
