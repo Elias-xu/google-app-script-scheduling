@@ -221,7 +221,10 @@ function computeAssignments_(courses, tas, unavailable, existing) {
       })
       .map(ta => {
         let score = 0;
-         if (assignedD0Keys[ta.name].has(course.d0Key)) {
+        if (assignedD0Keys[ta.name].has(course.d0Key)) {
+          score += CONFLICT_SCORE_.consecutive;
+        }
+        if (assignedD0Keys[ta.name].has(prevKey) || assignedD0Keys[ta.name].has(nextKey)) {
           score += CONFLICT_SCORE_.consecutive;
         }
         if (unav(ta).has(toDateKey_(course.d5))) score += CONFLICT_SCORE_.d5;
@@ -261,16 +264,18 @@ function writeAssignments_(sheet, results, startRow, startCol) {
   });
 }
 
-
 // ─── TA stats ─────────────────────────────────────────────────────────────────
+
 function generateTAStats() {
   const ss = SpreadsheetApp.openByUrl(COURSE_WORK_CONFIG.spreadsheetUrl);
   const cwSheet = ss.getSheetByName(COURSE_WORK_CONFIG.courseWorkSheetName);
+
   const statsHeaderRow = findStatsArea_(cwSheet);
   if (statsHeaderRow === -1) {
     SpreadsheetApp.getUi().alert('找不到助教統計區，請確認「公開班課程工作」A 欄有「助教」標題列。');
     return;
   }
+
   const lastRow = cwSheet.getLastRow();
   const taRows = [];
   for (let r = statsHeaderRow + 1; r <= lastRow; r++) {
@@ -282,10 +287,13 @@ function generateTAStats() {
     SpreadsheetApp.getUi().alert('找不到助教代碼，請確認「助教」標題列下方有助教代碼。');
     return;
   }
+
   const counts = {};
   taRows.forEach(({ code }) => (counts[code] = 0));
+
   const { startRow, startCol } = findCoursesArea_(cwSheet);
   const lastCol = cwSheet.getLastColumn();
+
   if (lastCol >= startCol + 1) {
     const numCols = lastCol - startCol;
     const rowValues = cwSheet.getRange(startRow + 1, startCol + 1, 1, numCols).getValues()[0];
@@ -298,11 +306,14 @@ function generateTAStats() {
       }
     }
   }
+
   taRows.forEach(({ row, code }) => {
     cwSheet.getRange(row, 2).setValue(counts[code]);
   });
+
   SpreadsheetApp.getActiveSpreadsheet().toast('每月跟課統計已更新：' + taRows.length + ' 位助教');
 }
+
 function findStatsArea_(sheet) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 1) return -1;
