@@ -268,7 +268,88 @@ function writeAssignments_(sheet, results, startRow, startCol) {
     sheet.getRange(startRow + 1, startCol + i * 2 + 1).setValue(result);
   });
 }
-
+// ─── Validate TA assignments ─────────────────────────────────────────────────
+function validateTAAssignments() {
+  const ss = SpreadsheetApp.openByUrl(COURSE_WORK_CONFIG.spreadsheetUrl);
+  const cwSheet = ss.getSheetByName(COURSE_WORK_CONFIG.courseWorkSheetName);
+  const tas = readTAList_(ss);
+  const courses = readCoursesWithCount_(ss);
+  if (courses.length === 0) {
+    SpreadsheetApp.getUi().alert('找不到課程資料，請先執行「抓取公開班課程」。');
+    return;
+  }
+  const years = [...new Set(courses.map(c => c.date.getFullYear()))];
+  const holidays = new Set();
+  for (const year of years) {
+    getHolidays_(year).forEach(d => holidays.add(d));
+  }
+  const coursesWithDates = courses.map(c => addWorkDates_(c, holidays));
+  const refYear = courses[0].date.getFullYear();
+  const unavailableRaw = readUnavailableDates_(ss);
+  const unavailable = {};
+  for (const ta of tas) {
+    unavailable[ta.name] = parseUnavailableDates_(unavailableRaw[ta.name] || [], refYear);
+  }
+  const { startRow, startCol } = findCoursesArea_(cwSheet);
+  const assignments = courses.map((_, i) => {
+    const val = cwSheet.getRange(startRow + 1, startCol + i * 2 + 1).getValue();
+    return String(val || '').trim() || null;
+  });
+  // Clear previous highlights
+  courses.forEach((_, i) => {
+    cwSheet.getRange(startRow + 1, startCol + i * 2 + 1).setBackground(null);
+  });
+  const hardViolations = [];
+  const softWarnings = [];
+  const taCourseDates = {};
+  tas.forEach(ta => (taCourseDates[ta.name] = []));
+  assignments.forEach((val, i) => {
+    if (!val) return;
+    const codes = (val.match(/[A-Za-z]{2,}/g) || []).map(c => c.toUpperCase());
+    const course = coursesWithDates[i];
+    const col = startCol + i * 2 + 1;
+    for (const code of codes) {
+      const ta = tas.find(t => extractTACode_(t.name) === code);
+      if (!ta) continue;
+      const unav = unavailable[ta.name] || new Set();
+      // Hard: course day unavailable
+      if (unav.has(course.d0Key)) {
+        hardViolations.push(`[不可排班] ${code}：${course.session}（${formatDisplayDate_(course.d0)}）課程當天不可排班`);
+        cwSheet.getRange(startRow + 1, col).setBackground('#FF6B6B');
+      }
+      // Hard: independence date not yet reached
+      if (ta.independenceDate && course.date < ta.independenceDate) {
+        hardViolations.push(`[獨立跟課] ${code}：${course.session} 早於可獨立跟課起始日（${formatDisplayDate_(ta.independenceDate)}）`);
+        cwSheet.getRange(startRow + 1, col).setBackground('#FF6B6B');
+      }
+      taCourseDates[ta.name].push({ courseIdx: i, d0Key: course.d0Key, d0: course.d0, col });
+    }
+  });
+  // Soft: consecutive days
+  tas.forEach(ta => {
+    const entries = taCourseDates[ta.name];
+    if (entries.length < 2) return;
+    entries.sort((a, b) => a.d0 - b.d0);
+    for (let i = 0; i < entries.length - 1; i++) {
+      const a = entries[i];
+      const b = entries[i + 1];
+      const nextDayKey = toDateKey_(new Date(a.d0.getTime() + 86400000));
+      if (nextDayKey === b.d0Key) {
+        const code = extractTACode_(ta.name);
+        softWarnings.push(`[連續跟課] ${code}：${courses[a.courseIdx].session} 與 ${courses[b.courseIdx].session} 為連續兩天`);
+        cwSheet.getRange(startRow + 1, b.col).setBackground('#FFC107');
+      }
+    }
+  });
+  if (hardViolations.length === 0 && softWarnings.length === 0) {
+    SpreadsheetApp.getActiveSpreadsheet().toast('✅ 助教分配驗證通過，無違規');
+    return;
+  }
+  const lines = [];
+  if (hardViolations.length > 0) lines.push('【違規（紅色）】\n' + hardViolations.join('\n'));
+  if (softWarnings.length > 0) lines.push('【注意（橘色）】\n' + softWarnings.join('\n'));
+  SpreadsheetApp.getUi().alert(lines.join('\n\n'));
+}
 // ─── Sync unavailable dates to calendars ─────────────────────────────────────
 
 function syncUnavailableDatesToCalendars() {
