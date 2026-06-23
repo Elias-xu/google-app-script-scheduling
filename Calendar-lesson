@@ -27,6 +27,7 @@ function onOpen() {
     .addSeparator()
     .addItem('分配助教', 'assignTAs')
     .addItem('每月跟課統計', 'generateTAStats')
+    .addItem('同步不可排班日至行事曆', 'syncUnavailableDatesToCalendars')
     .addToUi();
 }
 
