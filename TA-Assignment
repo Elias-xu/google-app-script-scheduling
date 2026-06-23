@@ -374,20 +374,6 @@ function generateTAStats() {
   }
 
   const lastRow = cwSheet.getLastRow();
-
-// ─── TA stats ─────────────────────────────────────────────────────────────────
-
-function generateTAStats() {
-  const ss = SpreadsheetApp.openByUrl(COURSE_WORK_CONFIG.spreadsheetUrl);
-  const cwSheet = ss.getSheetByName(COURSE_WORK_CONFIG.courseWorkSheetName);
-
-  const statsHeaderRow = findStatsArea_(cwSheet);
-  if (statsHeaderRow === -1) {
-    SpreadsheetApp.getUi().alert('找不到助教統計區，請確認「公開班課程工作」A 欄有「助教」標題列。');
-    return;
-  }
-
-  const lastRow = cwSheet.getLastRow();
   const taRows = [];
   for (let r = statsHeaderRow + 1; r <= lastRow; r++) {
     const val = String(cwSheet.getRange(r, 1).getValue() || '').trim();
