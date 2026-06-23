@@ -335,6 +335,7 @@ function findStatsArea_(sheet) {
  * @customfunction
  */
 function getTASchedule(taCode) {
+  try {
   const code = String(taCode || '').trim().toUpperCase();
   if (!code) return [['請輸入助教代號']];
 
@@ -346,6 +347,7 @@ function getTASchedule(taCode) {
   const lastRow = cwSheet.getLastRow();
   const lastCol = cwSheet.getLastColumn();
   if (lastCol < startCol + 1) return [['找不到課程資料']];
+  if (lastRow < startRow) return [['找不到課程資料（lastRow=' + lastRow + ' startRow=' + startRow + ')']];
 
   const data = cwSheet
     .getRange(startRow, startCol, lastRow - startRow + 1, lastCol - startCol + 1)
