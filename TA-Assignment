@@ -81,10 +81,12 @@ function readTAList_(ss) {
   const lastRow = sheet.getLastRow();
   if (lastRow < 2) return [];
 
-  return sheet.getRange(2, 1, lastRow - 1, 2).getValues()
-    .map(([independenceDate, name]) => ({
+  const numCols = Math.min(sheet.getLastColumn(), 3);
+  return sheet.getRange(2, 1, lastRow - 1, numCols).getValues()
+    .map(([independenceDate, name, calendarId]) => ({
       name: String(name || '').trim(),
       independenceDate: independenceDate ? new Date(independenceDate) : null,
+      calendarId: String(calendarId || '').trim() || null,
     }))
     .filter(({ name }) => name);
 }
@@ -264,6 +266,68 @@ function writeAssignments_(sheet, results, startRow, startCol) {
   });
 }
 
+// ─── Sync unavailable dates to calendars ─────────────────────────────────────
+
+function syncUnavailableDatesToCalendars() {
+  const ss = SpreadsheetApp.openByUrl(COURSE_WORK_CONFIG.spreadsheetUrl);
+
+  const tas = readTAList_(ss);
+  if (tas.length === 0) {
+    SpreadsheetApp.getUi().alert('找不到助教名單。');
+    return;
+  }
+
+  const unavailableRaw = readUnavailableDates_(ss);
+  const refYear = new Date().getFullYear();
+
+  let created = 0;
+  let skipped = 0;
+  let errors = 0;
+
+  for (const ta of tas) {
+    if (!ta.calendarId) continue;
+
+    let cal;
+    try {
+      cal = CalendarApp.getCalendarById(ta.calendarId);
+    } catch (e) {
+      Logger.log('Error getting calendar for ' + ta.name + ': ' + e.message);
+      errors++;
+      continue;
+    }
+    if (!cal) {
+      Logger.log('Cannot access calendar for: ' + ta.name);
+      errors++;
+      continue;
+    }
+
+    const dates = parseUnavailableDates_(unavailableRaw[ta.name] || [], refYear);
+
+    for (const dateKey of dates) {
+      const year = parseInt(dateKey.slice(0, 4));
+      const month = parseInt(dateKey.slice(4, 6)) - 1;
+      const day = parseInt(dateKey.slice(6, 8));
+      const date = new Date(year, month, day);
+
+      const existing = cal.getEventsForDay(date)
+        .filter(e => e.isAllDayEvent() && e.getTitle() === 'N/A');
+      if (existing.length > 0) { skipped++; continue; }
+
+      try {
+        cal.createAllDayEvent('N/A', date);
+        created++;
+      } catch (e) {
+        Logger.log('Error creating event for ' + ta.name + ' on ' + dateKey + ': ' + e.message);
+        errors++;
+      }
+    }
+  }
+
+  let msg = '不可排班日同步完成：新增 ' + created + ' 筆，略過 ' + skipped + ' 筆（已存在）';
+  if (errors > 0) msg += '，' + errors + ' 筆錯誤（請查看 Apps Script Logs）';
+  SpreadsheetApp.getActiveSpreadsheet().toast(msg);
+}
+
 // ─── TA stats ─────────────────────────────────────────────────────────────────
 
 function generateTAStats() {
@@ -375,7 +439,6 @@ function getTASchedule(taCode) {
         ? Utilities.formatDate(rawDate, 'Asia/Taipei', 'M/d')
         : String(rawDate || '');
       block.push([dateStr, task]);
-
     }
     if (block.length > 0) courseBlocks.push(block);
   }
