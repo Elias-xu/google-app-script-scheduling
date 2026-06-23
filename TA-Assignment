@@ -25,7 +25,7 @@ const TA_CONFIG_ = {
 
 const CONFLICT_SCORE_ = {
   consecutive: 100,
-  d1: 4,
+  d1: 50,
   dMid: 2,
   d5: 1,
   dAfter: 1,
@@ -346,11 +346,17 @@ function getTASchedule(taCode) {
   const { startRow, startCol } = findCoursesArea_(cwSheet);
   const lastRow = cwSheet.getLastRow();
   const lastCol = cwSheet.getLastColumn();
+  if (lastRow < startRow) return [['找不到課程資料']];
   if (lastCol < startCol + 1) return [['找不到課程資料']];
-  if (lastRow < startRow) return [['找不到課程資料（lastRow=' + lastRow + ' startRow=' + startRow + ')']];
+
+  // Limit row count to the actual course block height (rules + 2 header rows)
+  // to avoid reading the formula's own spill area below the course data.
+  const rules = readWorkRules_(cwSheet);
+  const blockHeight = rules.length + 2;
+  const dataHeight = Math.min(lastRow - startRow + 1, blockHeight);
 
   const data = cwSheet
-    .getRange(startRow, startCol, lastRow - startRow + 1, lastCol - startCol + 1)
+    .getRange(startRow, startCol, dataHeight, lastCol - startCol + 1)
     .getValues();
 
   const courseBlocks = [];
