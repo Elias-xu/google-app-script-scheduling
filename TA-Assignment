@@ -362,7 +362,12 @@ function getTASchedule(taCode) {
     for (let r = 2; r < data.length; r++) {
       const task = String(data[r][c + 1] || '');
       if (!task) continue;
-      block.push([String(data[r][c] || ''), task]);
+      const rawDate = data[r][c];
+      const dateStr = rawDate instanceof Date
+        ? Utilities.formatDate(rawDate, 'Asia/Taipei', 'M/d')
+        : String(rawDate || '');
+      block.push([dateStr, task]);
+
     }
     courseBlocks.push(block);
   }
