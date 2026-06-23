@@ -238,7 +238,7 @@ function computeAssignments_(courses, tas, unavailable, existing) {
         if (unav(ta).has(toDateKey_(course.dAfter))) score += CONFLICT_SCORE_.dAfter;
         return { ta, score, count: assignCount[ta.name] };
       })
-      .sort((a, b) => a.score - b.score || a.count - b.count);
+      .sort((a, b) => (a.score + a.count * 3) - (b.score + b.count * 3));
 
     if (scored.length === 0) return '（無可用助教）';
 
