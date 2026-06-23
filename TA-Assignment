@@ -104,7 +104,10 @@ function readUnavailableDates_(ss) {
   for (const row of data) {
     const name = String(row[0] || '').trim();
     if (!name) continue;
-    result[name] = row.slice(1).map(v => String(v || '').trim()).filter(Boolean);
+    result[name] = row.slice(1).map(v => {
+      if (v instanceof Date) return (v.getMonth() + 1) + '/' + v.getDate();
+      return String(v || '').trim();
+    }).filter(Boolean);
   }
   return result;
 }
