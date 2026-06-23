@@ -358,7 +358,7 @@ function getTASchedule(taCode) {
     const taCodes = (taCell.match(/[A-Za-z]{2,}/g) || []).map(x => x.toUpperCase());
     if (!taCodes.includes(code)) continue;
 
-    const block = [[String(data[0][c + 1] || ''), taCell]];
+    const block = [];
     for (let r = 2; r < data.length; r++) {
       const task = String(data[r][c + 1] || '');
       if (!task) continue;
